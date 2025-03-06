@@ -18,56 +18,64 @@ dynamodb = boto3.resource(
 user_table = dynamodb.Table(USER_TABLE_NAME)
 file_table = dynamodb.Table(FILE_TABLE_NAME)
 
+
 def create_tables_if_not_exist():
     """Create DynamoDB tables if they don't exist."""
-    tables = list(dynamodb.tables.all())
-    table_names = [table.name for table in tables]
+    existing_tables = [table.name for table in list(dynamodb.tables.all())]
 
-    if USER_TABLE_NAME not in table_names:
+    if USER_TABLE_NAME not in existing_tables:
         print(f"Creating user table: {USER_TABLE_NAME}")
         dynamodb.create_table(
             TableName=USER_TABLE_NAME,
             KeySchema=[
-                {'AttributeName': 'username', 'KeyType': 'HASH'}
+                {'AttributeName': 'username', 'KeyType': 'HASH'}  # Primary key
             ],
             AttributeDefinitions=[
                 {'AttributeName': 'username', 'AttributeType': 'S'}
             ],
             ProvisionedThroughput={'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
         )
-    
-    if FILE_TABLE_NAME not in table_names:
+        # Wait for table to be created
+        waiter = dynamodb.meta.client.get_waiter('table_exists')
+        waiter.wait(TableName=USER_TABLE_NAME)
+
+    if FILE_TABLE_NAME not in existing_tables:
         print(f"Creating file table: {FILE_TABLE_NAME}")
-        dynamodb.create_table(
-            TableName=FILE_TABLE_NAME,
-            KeySchema=[
-                {'AttributeName': 'file_id', 'KeyType': 'HASH'}
-            ],
-            AttributeDefinitions=[
-                {'AttributeName': 'file_id', 'AttributeType': 'S'},
-                {'AttributeName': 'owner', 'AttributeType': 'S'}
-            ],
-            GlobalSecondaryIndexes=[
-                {
-                    'IndexName': 'OwnerIndex',
-                    'KeySchema': [
-                        {'AttributeName': 'owner', 'KeyType': 'HASH'},
-                    ],
-                    'Projection': {'ProjectionType': 'ALL'},
-                    'ProvisionedThroughput': {'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
-                }
-            ],
-            ProvisionedThroughput={'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
-        )
-        
-    # Wait for tables to be created
-    dynamodb.meta.client.get_waiter('table_exists').wait(TableName=USER_TABLE_NAME)
-    dynamodb.meta.client.get_waiter('table_exists').wait(TableName=FILE_TABLE_NAME)
+        try:
+            dynamodb.create_table(
+                TableName=FILE_TABLE_NAME,
+                KeySchema=[
+                    {'AttributeName': 'file_id', 'KeyType': 'HASH'}  # Primary key
+                ],
+                AttributeDefinitions=[
+                    {'AttributeName': 'file_id', 'AttributeType': 'S'},
+                    {'AttributeName': 'owner', 'AttributeType': 'S'}
+                ],
+                GlobalSecondaryIndexes=[
+                    {
+                        'IndexName': 'OwnerIndex',
+                        'KeySchema': [
+                            {'AttributeName': 'owner', 'KeyType': 'HASH'},
+                        ],
+                        'Projection': {'ProjectionType': 'ALL'},
+                        'ProvisionedThroughput': {'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
+                    }
+                ],
+                ProvisionedThroughput={'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
+            )
+            # Wait for table to be created
+            waiter = dynamodb.meta.client.get_waiter('table_exists')
+            waiter.wait(TableName=FILE_TABLE_NAME)
+        except Exception as e:
+            print(f"Error creating file table: {str(e)}")
+
     print("Tables are ready")
+
 
 def hash_password(password):
     """Hash a password for storage."""
     return hashlib.sha256(password.encode()).hexdigest()
+
 
 def register_user(username, password):
     """Register a new user."""
@@ -75,10 +83,11 @@ def register_user(username, password):
         user_exists = get_user(username)
         if user_exists:
             return False, "Username already exists"
-        
+
+        # Use 'username' as the key name to match table schema
         user_table.put_item(
             Item={
-                'username': username,
+                'username': username,  # This matches the key schema
                 'password_hash': hash_password(password),
                 'created_at': datetime.datetime.now().isoformat(),
                 'last_login': datetime.datetime.now().isoformat()
@@ -88,13 +97,14 @@ def register_user(username, password):
     except Exception as e:
         return False, f"Error registering user: {str(e)}"
 
+
 def authenticate_user(username, password):
     """Authenticate a user."""
     try:
         user = get_user(username)
         if not user:
             return False, "User not found"
-        
+
         if user['password_hash'] == hash_password(password):
             # Update last login time
             user_table.update_item(
@@ -109,13 +119,16 @@ def authenticate_user(username, password):
     except Exception as e:
         return False, f"Authentication error: {str(e)}"
 
+
 def get_user(username):
     """Get user details."""
     try:
         response = user_table.get_item(Key={'username': username})
         return response.get('Item')
-    except Exception:
+    except Exception as e:
+        print(f"Error getting user: {str(e)}")
         return None
+
 
 def save_file_metadata(filename, s3_key, file_size, owner, description=""):
     """Save file metadata to DynamoDB."""
@@ -136,6 +149,7 @@ def save_file_metadata(filename, s3_key, file_size, owner, description=""):
     except Exception as e:
         return False, f"Error saving file metadata: {str(e)}"
 
+
 def get_file_metadata(file_id):
     """Get file metadata by ID."""
     try:
@@ -143,6 +157,7 @@ def get_file_metadata(file_id):
         return response.get('Item')
     except Exception:
         return None
+
 
 def list_user_files(username):
     """List all files owned by a user."""
@@ -156,6 +171,7 @@ def list_user_files(username):
         print(f"Error listing user files: {str(e)}")
         return []
 
+
 # Function to populate sample data
 def populate_sample_data():
     """Populate sample users and files for testing."""
@@ -165,9 +181,9 @@ def populate_sample_data():
         {'username': 'bob', 'password': 'secure456'},
         {'username': 'charlie', 'password': 'charlie789'}
     ]
-    
+
     for user in sample_users:
         success, message = register_user(user['username'], user['password'])
         print(f"Adding user {user['username']}: {message}")
-    
+
     print("Sample data populated successfully")
